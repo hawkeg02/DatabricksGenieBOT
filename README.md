@@ -22,7 +22,7 @@ The bot is built using:
 - Python
 - Bot Framework SDK
 - aiohttp for asynchronous HTTP requests
-- Databricks Genie API (Private Preview)
+- Databricks Genie API (Public Preview)
 
 The main components of the system are:
 - A `genie_conversation` function that handles the communication with the Genie API
@@ -31,15 +31,15 @@ The main components of the system are:
 
 ## Disclaimer
 
-This code is experimental and uses a Private Preview API that is not yet supported by Databricks. It should not be used in production environments and is provided strictly for educational and experimental purposes. Use at your own risk.
+This code is experimental and uses a Public Preview API that is not yet supported by Databricks. It should not be used in production environments and is provided strictly for educational and experimental purposes. Use at your own risk.
 
 The code was tested in Azure Bot Framework that facilitates to integrate with any chatbot like MS Teams.
 
 ## Setup and Usage
 
-0. Python version 3.12.4
+0. Python version 3.13
 1. Install the required dependencies listed in `requirements.txt`
-2. Set up the necessary environment variables (DATABRICKS_SPACE_ID, DATABRICKS_HOST, DATABRICKS_TOKEN, etc.) in the env.example file, change the name to .env
+2. Set up the necessary environment variables (DATABRICKS_SPACE_ID, DATABRICKS_HOST, DATABRICKS_TOKEN, TENANT_ID etc.) in the config.py file
 3. Run the `app.py` script to start the bot
 4. Call the bot endpoint via Azure Bot Framework or deploy it on a web application to handle the calls.
 

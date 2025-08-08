@@ -1,9 +1,7 @@
-flask
 requests
 python-dotenv
 pandas
 botbuilder
-flask-cors
 aiohttp
 botbuilder-core
 botbuilder-ai
@@ -12,3 +10,4 @@ botbuilder-schema
 botbuilder-dialogs
 botbuilder-integration-aiohttp
 databricks-sdk
+azure-identity
