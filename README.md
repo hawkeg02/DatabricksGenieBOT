@@ -32,6 +32,53 @@ The main components of the system are:
 - An aiohttp web application that serves as the entry point for bot messages
 - **NEW**: Integrated feedback system that sends user feedback directly to Databricks Genie API using the send message feedback endpoint
 
+## Session Management Architecture
+
+### How Authentication Works
+
+The bot uses a **single Databricks token** (configured via `DATABRICKS_TOKEN`) to authenticate all requests to the Databricks Genie API. This is a shared credential that the bot uses on behalf of all users.
+
+### How User Sessions Are Managed
+
+While a single token is used for API authentication, the bot maintains **separate session contexts for each user**:
+
+1. **User Identification**: Each user is identified by their email address (manually provided or from Teams profile)
+2. **Session Isolation**: Each user gets their own `UserSession` object that tracks:
+   - User email and name
+   - Individual conversation ID with Genie
+   - Conversation history and context
+   - Last activity timestamp
+   - User-specific preferences
+
+3. **Conversation Context**: The bot maintains separate Genie conversation threads for each user, ensuring that:
+   - User A's questions don't affect User B's conversation
+   - Each user can have follow-up questions in their own context
+   - Conversations are preserved for 4 hours of inactivity before auto-reset
+
+4. **Query Logging**: When queries are sent to Genie, the user's email is prepended to the question for tracking purposes in Databricks:
+   ```
+   [user@company.com] What are the top selling products?
+   ```
+
+### Benefits of This Architecture
+
+- **Simplified Administration**: Single token to manage instead of per-user credentials
+- **User Privacy**: Each user's conversation is isolated from others
+- **Context Preservation**: Users can have natural, multi-turn conversations with Genie
+- **Audit Trail**: All queries are logged with user attribution in Databricks
+- **Scalability**: Can support many concurrent users with minimal configuration
+
+### Security Considerations
+
+- The Databricks token should have appropriate permissions for the Genie Space being accessed
+- User emails are used for logging only and are not used for authentication
+- Sessions are stored in memory and are cleared after 4 hours of inactivity
+- Consider using Azure Key Vault for storing the Databricks token in production
+
+### Other Authentication Options
+
+-While this bot uses a single token to manage many users, you could connect Databricks and Teams via OAuth if you so choose. This is just the example we built
+
 ## Disclaimer
 
 This code is experimental and uses a Public Preview API that is not yet supported by Databricks. It should not be used in production environments and is provided strictly for educational and experimental purposes. Use at your own risk.

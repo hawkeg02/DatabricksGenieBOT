@@ -573,8 +573,8 @@ class MyBot(ActivityHandler):
         """Handle cases where user email is not available"""
         user_id = turn_context.activity.from_property.id
         
-        if question.lower() in ["info", "/info", "information", "about", "what is this"]:
-            info_message = f"""🤖 **Databricks Genie Bot Information**
+        if question.lower() in ["help", "/help", "commands", "/commands"]:
+            help_message = f"""🤖 **Databricks Genie Bot Information**
 
 **What I do:**
 I'm a Teams bot that connects to a Databricks Genie Space, allowing you to interact with your data through natural language queries directly in Teams.
@@ -590,19 +590,19 @@ I'm a Teams bot that connects to a Databricks Genie Space, allowing you to inter
 • Your email is used **only for logging queries in Genie** - not for AI processing
 
 **Available Commands:**
-• `help` - Show all available commands
+• `help` - Show this information
+• `info` - Get help getting started
 • `whoami` - Display your user information
 • `reset` - Start a fresh conversation
 • `new chat` - Start a fresh conversation
-• `info` - Show this information
 • `logout` - Clear your session
 
 **Need Help?**
 Contact the bot administrator at: {CONFIG.ADMIN_CONTACT_EMAIL}"""
             
-            await turn_context.send_activity(info_message)
-        elif question.lower() in ["help", "/help"]:
-            help_text = """🤖 **Welcome to the Genie Bot - User Logging Required**
+            await turn_context.send_activity(help_message)
+        elif question.lower() in ["info", "/info"]:
+            info_text = """🤖 **Welcome to the Genie Bot - User Logging Required**
 
 I need your email address to log queries in Genie for tracking purposes.
 
@@ -616,11 +616,11 @@ I need your email address to log queries in Genie for tracking purposes.
 - You can ask follow-up questions
 
 **Learn More:**
-- Type `info` to learn about the Genie Bot
-- Type `help` to learn what commands are available
+- Type `help` to learn more about the Genie Bot
+- Type `info` for help getting started
 
 Ready to get started? Type `email` to provide your email address!"""
-            await turn_context.send_activity(help_text)
+            await turn_context.send_activity(info_text)
         elif question.lower() in ["email", "provide email", "enter email"]:
             # User wants to provide email manually
             self.pending_email_input[user_id] = True
@@ -635,8 +635,8 @@ Ready to get started? Type `email` to provide your email address!"""
                 "I need your email address to log queries in Genie for tracking purposes.\n\n"
                 "**Quick Options:**\n"
                 "- Type `email` to provide your email address\n"
-                "- Type `info` to learn about the Genie Bot\n"
-                "- Type `help` to learn what commands are available\n\n"
+                "- Type `help` to learn more about the Genie Bot\n"
+                "- Type `info` for help getting started\n\n"
                 "Once logged in, you'll be able to ask me questions about your data!"
             )
 
@@ -672,11 +672,11 @@ Ready to get started? Type `email` to provide your email address!"""
                 )
                 return True
         
-        # Help command
-        if question.lower() in ["help", "/help", "commands", "/commands"]:
+        # Info command
+        if question.lower() in ["info", "/info"]:
             is_emulator = turn_context.activity.channel_id == "emulator"
             
-            help_text = f"""🤖 **Databricks Genie Bot Commands**
+            info_text = f"""🤖 **Databricks Genie Bot Commands**
 
 **👤 User:** {user_session.get_display_name()}
 
@@ -685,26 +685,29 @@ Ready to get started? Type `email` to provide your email address!"""
 
 **User Commands:**
 - `whoami` - Show your user information
-- `info` - Show detailed bot information
+- `help` - Show detailed bot information
 - `logout` - Clear your session (you'll be re-identified on next message)"""
 
             if is_emulator:
-                help_text += """
+                info_text += """
 
 **🔧 Emulator Testing Commands:**
 - `/setuser your.email@company.com Your Name` - Set your identity for testing
 - Example: `/setuser john.doe@company.com John Doe`"""
 
-            help_text += f"""
+            info_text += f"""
 
 **General Usage:**
 - Ask me any question about your data
 - I'll remember our conversation context
 - Use the commands above to start fresh when needed
 
-**Current Status:** {"New conversation" if user_session.conversation_id is None else "Continuing existing conversation"}"""
+**Current Status:** {"New conversation" if user_session.conversation_id is None else "Continuing existing conversation"}
+
+**Need Help?**
+Contact the bot administrator at: {CONFIG.ADMIN_CONTACT_EMAIL}"""
             
-            await turn_context.send_activity(help_text)
+            await turn_context.send_activity(info_text)
             return True
 
         # Whoami command
@@ -737,9 +740,9 @@ Ready to get started? Type `email` to provide your email address!"""
             )
             return True
 
-        # Info command
-        if question.lower() in ["info", "/info", "information", "about", "what is this"]:
-            info_message = f"""🤖 **Databricks Genie Bot Information**
+        # Help command
+        if question.lower() in ["help", "/help", "commands", "/commands", "information", "about", "what is this"]:
+            help_message = f"""🤖 **Databricks Genie Bot Information**
 
 **What I do:**
 I'm a Teams bot that connects to a Databricks Genie Space, allowing you to interact with your data through natural language queries directly in Teams.
@@ -755,17 +758,17 @@ I'm a Teams bot that connects to a Databricks Genie Space, allowing you to inter
 • Your email is used **only for logging queries in Genie** - not for AI processing
 
 **Available Commands:**
-• `help` - Show all available commands
+• `help` - Show this information
+• `info` - Get help getting started
 • `whoami` - Display your user information
 • `reset` - Start a fresh conversation
 • `new chat` - Start a fresh conversation
-• `info` - Show this information
 • `logout` - Clear your session
 
 **Need Help?**
 Contact the bot administrator at: {CONFIG.ADMIN_CONTACT_EMAIL}"""
             
-            await turn_context.send_activity(info_message)
+            await turn_context.send_activity(help_message)
             return True
 
         # New conversation triggers
@@ -1122,8 +1125,8 @@ You're using the Bot Emulator for testing. You can change your identity anytime 
                     welcome_message += """
 
 **Quick Commands:**
-- `help` - All available commands
-- `info` - Detailed bot information
+- `help` - Detailed bot information
+- `info` - Get help getting started
 - `whoami` - Your user information
 - `reset` or `new chat` - Start fresh
 - Just ask me anything about your data!
@@ -1150,13 +1153,13 @@ Example: `/setuser john.doe@company.com John Doe`"""
 
 **To get started:**
 - Type `email` to provide your email address
-- Type `help` for more information"""
+- Type `info` for help getting started"""
 
                     welcome_message += """
 
 **Quick Commands:**
-- `help` - All available commands
-- `info` - Detailed bot information
+- `help` - Detailed bot information
+- `info` - Get help getting started
 - `whoami` - Your user information  
 - `reset` or `new chat` - Start fresh
 - Ask me anything about your data!
