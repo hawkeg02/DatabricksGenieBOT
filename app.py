@@ -2,7 +2,7 @@
 Databricks Genie Bot
 
 Authors: Luiz Carrossoni Neto, Ryan Bates
-Revision: 1.1
+Revision: 1.2
 
 This script implements an experimental chatbot that interacts with Databricks' Genie API. The bot facilitates conversations with Genie,
 Databricks' AI assistant, through a chat interface.
@@ -11,8 +11,9 @@ Note: This is experimental code and is not intended for production use.
 This is a test
 
 
-Update on May 02 to reflect Databricks API Changes https://www.databricks.com/blog/genie-conversation-apis-public-preview
+Update on May 2 to reflect Databricks API Changes https://www.databricks.com/blog/genie-conversation-apis-public-preview
 Update on Aug 5 to reflect Microsoft Azure no longer supporting MultiTenant bots
+Update on Oct 8 to add in user session management, user context, and feedback to the Genie API
 """
 
 """
