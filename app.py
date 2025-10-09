@@ -222,7 +222,27 @@ async def ask_genie(
 
         return json.dumps({"message": message_content.content}), conversation_id, initial_message.message_id
     except Exception as e:
-        logger.error(f"Error in ask_genie for user {user_session.get_display_name()}: {str(e)}")
+        error_str = str(e).lower()  # Convert to lowercase for case-insensitive matching
+        error_original = str(e)  # Keep original for logging
+        logger.error(f"Error in ask_genie for user {user_session.get_display_name()}: {error_original}")
+        
+        # Check for IP ACL blocking - look for "blocked" + "ip acl" pattern
+        # Error message format: "Source IP address: X.X.X.X is blocked by Databricks IP ACL for workspace"
+        if "ip acl" in error_str and "blocked" in error_str:
+            logger.error(f"IP ACL blocking detected: {error_original}")
+            return (
+                json.dumps({
+                    "error": "⚠️ **IP Access Blocked**\n\n"
+                            "The bot's IP address is blocked by Databricks Account IP Access Control Lists (ACLs).\n\n"
+                            "**Administrator Action Required:**\n"
+                            "Please check the TROUBLESHOOTING.md documentation for instructions on adding "
+                            "the bot's IP address to your Databricks Account IP allow list."
+                }),
+                conversation_id,
+                None,
+            )
+        
+        # Generic error for other cases
         return (
             json.dumps({"error": "An error occurred while processing your request."}),
             conversation_id,
@@ -258,6 +278,8 @@ def process_query_results(answer_json: Dict) -> str:
                 response += "| " + " | ".join(formatted_row) + " |\n"
         else:
             response += f"Unexpected column format: {columns}\n\n"
+    elif "error" in answer_json:
+        response += f"{answer_json['error']}\n\n"
     elif "message" in answer_json:
         response += f"{answer_json['message']}\n\n"
     else:

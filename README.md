@@ -121,8 +121,6 @@ cp env.example .env
 - `DATABRICKS_HOST`: Your Databricks workspace URL (has default)
 - `SAMPLE_QUESTIONS`: Semicolon-delimited list of sample questions to show users when they first log in. Customize these for your specific Genie space and use case (default: generic questions about data availability)
 - `ADMIN_CONTACT_EMAIL`: Email address displayed to users in the info command for support inquiries (default: admin@company.com)
-- `TEAMS_APP_PACKAGE_NAME`: Teams app package name (has default)
-- `TEAMS_APP_VERSION`: Teams app version (has default)
 - `ENABLE_FEEDBACK_CARDS`: Enable/disable feedback collection (default: True)
 - `ENABLE_GENIE_FEEDBACK_API`: Enable/disable sending feedback to Databricks Genie API (default: True)
 
