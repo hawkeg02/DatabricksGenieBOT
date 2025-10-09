@@ -226,8 +226,9 @@ async def ask_genie(
         error_original = str(e)  # Keep original for logging
         logger.error(f"Error in ask_genie for user {user_session.get_display_name()}: {error_original}")
         
-        # Check for IP ACL blocking (403 Forbidden with IP ACL mention)
-        if ("403" in error_str or "forbidden" in error_str) and ("ip acl" in error_str or ("blocked" in error_str and "ip address" in error_str)):
+        # Check for IP ACL blocking - look for "blocked" + "ip acl" pattern
+        # Error message format: "Source IP address: X.X.X.X is blocked by Databricks IP ACL for workspace"
+        if "ip acl" in error_str and "blocked" in error_str:
             logger.error(f"IP ACL blocking detected: {error_original}")
             return (
                 json.dumps({
