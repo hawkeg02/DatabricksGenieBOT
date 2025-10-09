@@ -233,10 +233,10 @@ async def ask_genie(
             return (
                 json.dumps({
                     "error": "⚠️ **IP Access Blocked**\n\n"
-                            "The bot's IP address is blocked by Databricks IP Access Control Lists (ACLs).\n\n"
+                            "The bot's IP address is blocked by Databricks Account IP Access Control Lists (ACLs).\n\n"
                             "**Administrator Action Required:**\n"
                             "Please check the TROUBLESHOOTING.md documentation for instructions on adding "
-                            "the bot's IP address to your Databricks workspace IP allow list."
+                            "the bot's IP address to your Databricks Account IP allow list."
                 }),
                 conversation_id,
                 None,
