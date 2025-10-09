@@ -109,6 +109,77 @@ Genie API returned no results
 3. Test the Space directly in Databricks UI first
 4. Check that your query is compatible with the data in the Space
 
+**Error Message (User sees):**
+```
+No data available.
+```
+
+**Error Message (In Logs):**
+```
+403 Forbidden
+Source IP address: X.X.X.X is blocked by Databricks IP ACL for workspace
+```
+
+**Cause:** Your Azure App Service's outbound IP address is blocked by Databricks IP Access Lists (ACLs)
+
+**Solutions:**
+
+1. **Find Your Azure App Service Outbound IPs:**
+   - Go to Azure Portal → Your App Service
+   - Navigate to **Networking** (in the left sidebar)
+   - Look for **Outbound IP addresses** section
+   - Copy all the IP addresses listed (there may be several)
+   - Example: `198.51.100.10, 198.51.100.20, 198.51.100.30`
+
+2. **Add IPs to Databricks Allow List (Web UI Method):**
+   - Go to your Databricks workspace
+   - Navigate to **Admin Settings** → **IP Access Lists**
+   - Click **Add** to create a new IP access list entry
+   - Add each Azure App Service outbound IP address
+   - Label it clearly (e.g., "teams-genie-bot")
+   - Select **ALLOW** as the list type
+   - Click **Add** to save
+
+   **For detailed instructions**, see: [Configure IP access lists for workspaces](https://docs.databricks.com/aws/en/security/network/front-end/ip-access-list-account)
+
+3. **Add IPs to Databricks Allow List (CLI Method):**
+   
+   If you prefer using the Databricks CLI, you can add IPs programmatically:
+
+   ```bash
+   databricks ip-access-lists create --json '{
+     "label": "teams-genie-bot",
+     "list_type": "ALLOW",
+     "ip_addresses": [
+       "198.51.100.10/32",
+       "198.51.100.20/32",
+       "198.51.100.30/32"
+     ]
+   }'
+   ```
+
+   Replace the IP addresses with your actual Azure App Service outbound IPs. The `/32` suffix means a single IP address.
+
+   **For CLI documentation**, see: [Databricks CLI IP Access Lists Commands](https://docs.databricks.com/aws/en/dev-tools/cli/reference/ip-access-lists-commands)
+
+4. **Alternative: Use Azure VNet Integration** (Advanced):
+   - Configure Azure App Service VNet integration
+   - Set up private endpoint to Databricks
+   - This provides a more secure, stable IP address
+
+5. **Test the Connection:**
+   - After adding IPs to the allow list, wait a few minutes for changes to take effect
+   - Try querying the bot again
+   - Check Azure App Service logs to confirm the 403 error is gone
+   - If still blocked, verify the IP in the error log matches the IPs you added
+
+**Important Notes:**
+- **IP Changes**: Azure App Service outbound IPs can change during scaling or updates
+- **Production Recommendation**: Consider using a static outbound IP with Azure NAT Gateway for production deployments
+- **Documentation**: Document all IPs added to Databricks ACL for future reference
+- **Maximum IPs**: Databricks supports a maximum of 1000 IP/CIDR values across all allow and block lists
+- **Verification**: Always verify the IP in the error log matches the IPs you added to the allow list
+
 ### 6. Feedback System Issues
 
 **Problem:** Feedback buttons (👍/👎) not appearing
