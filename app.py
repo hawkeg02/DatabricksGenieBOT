@@ -222,12 +222,13 @@ async def ask_genie(
 
         return json.dumps({"message": message_content.content}), conversation_id, initial_message.message_id
     except Exception as e:
-        error_str = str(e)
-        logger.error(f"Error in ask_genie for user {user_session.get_display_name()}: {error_str}")
+        error_str = str(e).lower()  # Convert to lowercase for case-insensitive matching
+        error_original = str(e)  # Keep original for logging
+        logger.error(f"Error in ask_genie for user {user_session.get_display_name()}: {error_original}")
         
-        # Check for IP ACL blocking (403 Forbidden)
-        if "403" in error_str and ("IP ACL" in error_str or "blocked" in error_str.lower()):
-            logger.error(f"IP ACL blocking detected: {error_str}")
+        # Check for IP ACL blocking (403 Forbidden with IP ACL mention)
+        if ("403" in error_str or "forbidden" in error_str) and ("ip acl" in error_str or ("blocked" in error_str and "ip address" in error_str)):
+            logger.error(f"IP ACL blocking detected: {error_original}")
             return (
                 json.dumps({
                     "error": "⚠️ **IP Access Blocked**\n\n"
