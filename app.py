@@ -294,6 +294,42 @@ class MyBot(ActivityHandler):
         self.email_sessions: Dict[str, UserSession] = {}  # Maps email to UserSession for easy lookup
         self.message_feedback: Dict[str, Dict] = {}  # Track feedback for each message
         self.pending_email_input: Dict[str, bool] = {}  # Track users waiting for email input
+        self._is_warmed_up: bool = False
+        self._warmup_lock: asyncio.Lock = asyncio.Lock()
+        self._warmup_in_progress: bool = False
+
+    async def _ensure_warmed_up(self, turn_context: TurnContext) -> None:
+        """Warm up the Genie API on cold start before handling the user's message."""
+
+        if self._is_warmed_up:
+            return
+
+        notify_user = False
+        if not self._warmup_in_progress:
+            self._warmup_in_progress = True
+            notify_user = True
+
+        if notify_user:
+            await turn_context.send_activity(
+                "⚙️ **Warming up the Genie Bot...**\n\n"
+                "This may take a few seconds and will only happen once."
+            )
+
+        async with self._warmup_lock:
+            if self._is_warmed_up:
+                self._warmup_in_progress = False
+                return
+
+            try:
+                logger.info("Starting Genie warm-up request")
+                loop = asyncio.get_running_loop()
+                await loop.run_in_executor(None, genie_api.list_spaces)
+                self._is_warmed_up = True
+                logger.info("Genie warm-up completed successfully")
+            except Exception as e:
+                logger.error(f"Genie warm-up failed: {str(e)}")
+            finally:
+                self._warmup_in_progress = False
 
     async def get_or_create_user_session(self, turn_context: TurnContext) -> UserSession:
         """Get or create a user session based on Teams user information"""
@@ -579,7 +615,10 @@ class MyBot(ActivityHandler):
         # Handle special commands first (before checking for timeout reset)
         if await self._handle_special_commands(turn_context, question, user_session):
             return
-        
+
+        # Ensure the Genie API is warmed up before processing the first real question
+        await self._ensure_warmed_up(turn_context)
+
         # Check if conversation was reset due to timeout (only for data questions, not commands)
         if user_session.conversation_id is None and user_session.user_id in self.user_sessions:
             # This means the conversation was reset due to timeout
