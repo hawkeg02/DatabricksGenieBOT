@@ -296,40 +296,66 @@ class MyBot(ActivityHandler):
         self.pending_email_input: Dict[str, bool] = {}  # Track users waiting for email input
         self._is_warmed_up: bool = False
         self._warmup_lock: asyncio.Lock = asyncio.Lock()
-        self._warmup_in_progress: bool = False
+        self._warmup_notified: bool = False
 
-    async def _ensure_warmed_up(self, turn_context: TurnContext) -> None:
-        """Warm up the Genie API on cold start before handling the user's message."""
+    async def warmup(self) -> None:
+        """Warm up the Genie API without requiring a user turn context."""
 
         if self._is_warmed_up:
             return
 
-        notify_user = False
-        if not self._warmup_in_progress:
-            self._warmup_in_progress = True
-            notify_user = True
+        async with self._warmup_lock:
+            if self._is_warmed_up:
+                return
 
-        if notify_user:
+            warmup_completed = await self._perform_warmup_locked("startup")
+            if warmup_completed:
+                self._warmup_notified = False
+
+    async def _ensure_warmed_up(self, turn_context: TurnContext) -> bool:
+        """Warm up the Genie API on cold start before handling the user's message."""
+
+        if self._is_warmed_up:
+            return True
+
+        if not self._warmup_notified:
             await turn_context.send_activity(
-                "⚙️ **Warming up the Genie Bot...**\n\n"
-                "This may take a few seconds and will only happen once."
+                "⚙️ **Warming up the Genie Bot...**\n\nThis may take a few seconds and will only happen once."
             )
+            self._warmup_notified = True
 
         async with self._warmup_lock:
             if self._is_warmed_up:
-                self._warmup_in_progress = False
-                return
+                self._warmup_notified = False
+                return True
 
-            try:
-                logger.info("Starting Genie warm-up request")
-                loop = asyncio.get_running_loop()
-                await loop.run_in_executor(None, genie_api.list_spaces)
-                self._is_warmed_up = True
-                logger.info("Genie warm-up completed successfully")
-            except Exception as e:
-                logger.error(f"Genie warm-up failed: {str(e)}")
-            finally:
-                self._warmup_in_progress = False
+            warmup_completed = await self._perform_warmup_locked("on-demand")
+
+        if warmup_completed:
+            self._warmup_notified = False
+            return True
+
+        if self._warmup_notified:
+            await turn_context.send_activity(
+                "❌ I couldn't warm up the Genie service. Please try again in a moment."
+            )
+            self._warmup_notified = False
+
+        return False
+
+    async def _perform_warmup_locked(self, source: str) -> bool:
+        """Execute the warm-up routine. Must be called while holding the lock."""
+
+        try:
+            logger.info(f"Starting Genie warm-up request ({source})")
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, genie_api.list_spaces)
+            self._is_warmed_up = True
+            logger.info(f"Genie warm-up completed successfully ({source})")
+            return True
+        except Exception as e:
+            logger.error(f"Genie warm-up failed ({source}): {str(e)}")
+            return False
 
     async def get_or_create_user_session(self, turn_context: TurnContext) -> UserSession:
         """Get or create a user session based on Teams user information"""
@@ -617,7 +643,8 @@ class MyBot(ActivityHandler):
             return
 
         # Ensure the Genie API is warmed up before processing the first real question
-        await self._ensure_warmed_up(turn_context)
+        if not await self._ensure_warmed_up(turn_context):
+            return
 
         # Check if conversation was reset due to timeout (only for data questions, not commands)
         if user_session.conversation_id is None and user_session.user_id in self.user_sessions:
@@ -1310,9 +1337,19 @@ async def messages(req: Request) -> Response:
         return Response(status=500)
 
 
+async def _startup_warmup(app: web.Application) -> None:
+    """Ensure the Genie API is warmed up when the aiohttp app starts."""
+
+    try:
+        await BOT.warmup()
+    except Exception:
+        logger.exception("Startup warm-up encountered an unexpected error")
+
+
 def init_func(argv):
     APP = web.Application(middlewares=[aiohttp_error_middleware])
     APP.router.add_post("/api/messages", messages)
+    APP.on_startup.append(_startup_warmup)
     return APP
 
 
