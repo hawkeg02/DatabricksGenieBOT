@@ -294,6 +294,122 @@ class MyBot(ActivityHandler):
         self.email_sessions: Dict[str, UserSession] = {}  # Maps email to UserSession for easy lookup
         self.message_feedback: Dict[str, Dict] = {}  # Track feedback for each message
         self.pending_email_input: Dict[str, bool] = {}  # Track users waiting for email input
+        self._is_warmed_up: bool = False
+        self._warmup_lock: asyncio.Lock = asyncio.Lock()
+        self._warmup_notified: bool = False
+        self._warmup_task: Optional[asyncio.Task] = None
+        self._warmup_error: Optional[str] = None
+
+    async def warmup(self) -> None:
+        """Warm up the Genie API without requiring a user turn context."""
+
+        if self._is_warmed_up:
+            return
+
+        async with self._warmup_lock:
+            if self._is_warmed_up:
+                return
+
+            if self._warmup_task is None or self._warmup_task.done():
+                self._warmup_task = asyncio.create_task(self._run_warmup("startup"))
+
+            warmup_task = self._warmup_task
+
+        try:
+            warmup_completed = await warmup_task
+        except Exception:
+            warmup_completed = False
+
+        if warmup_completed:
+            self._warmup_notified = False
+
+    async def _ensure_warmed_up(self, turn_context: TurnContext) -> bool:
+        """Warm up the Genie API on cold start before handling the user's message."""
+
+        if self._is_warmed_up:
+            return True
+
+        if not self._warmup_notified:
+            await turn_context.send_activity(
+                "⚙️ **Warming up the Genie Bot...**\n\nThis may take a few seconds and will only happen once."
+            )
+            self._warmup_notified = True
+
+        async with self._warmup_lock:
+            if self._is_warmed_up:
+                self._warmup_notified = False
+                return True
+
+            if self._warmup_task is None or self._warmup_task.done():
+                self._warmup_task = asyncio.create_task(self._run_warmup("on-demand"))
+
+            warmup_task = self._warmup_task
+
+        try:
+            warmup_completed = await warmup_task
+        except Exception:
+            warmup_completed = False
+
+        if warmup_completed:
+            self._warmup_notified = False
+            return True
+
+        if self._warmup_notified:
+            await turn_context.send_activity(
+                "❌ I couldn't warm up the Genie service. Please try again in a moment." if not self._warmup_error else
+                f"❌ I couldn't warm up the Genie service ({self._warmup_error}). Please try again in a moment."
+            )
+            self._warmup_notified = False
+
+        return False
+
+    def _blocking_warmup(self) -> None:
+        """Perform the blocking warm-up calls in a worker thread."""
+
+        genie_api.list_spaces()
+
+        space_id = CONFIG.DATABRICKS_SPACE_ID
+        if not space_id:
+            return
+
+        warmup_question = getattr(CONFIG, "WARMUP_PROMPT", None) or "Warm-up handshake"
+
+        try:
+            message = genie_api.start_conversation_and_wait(space_id, f"[warmup] {warmup_question}")
+        except Exception as warmup_error:
+            logger.warning("Warm-up conversation could not be created: %s", warmup_error)
+            raise
+
+        conversation_id = getattr(message, "conversation_id", None)
+        message_id = getattr(message, "message_id", None)
+        if not (conversation_id and message_id):
+            raise RuntimeError("Warm-up conversation did not return identifiers")
+
+        try:
+            genie_api.get_message(space_id, conversation_id, message_id)
+        except Exception as fetch_error:
+            logger.debug("Warm-up message fetch failed: %s", fetch_error)
+
+    async def _run_warmup(self, source: str) -> bool:
+        """Execute the warm-up routine and cache the result for awaiting callers."""
+
+        try:
+            logger.info(f"Starting Genie warm-up request ({source})")
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._blocking_warmup)
+            self._is_warmed_up = True
+            self._warmup_error = None
+            logger.info(f"Genie warm-up completed successfully ({source})")
+            return True
+        except Exception as e:
+            self._is_warmed_up = False
+            self._warmup_error = str(e)
+            logger.error(f"Genie warm-up failed ({source}): {str(e)}")
+            return False
+        finally:
+            # Ensure failed warm-ups can be retried by future callers
+            if self._warmup_task and self._warmup_task.done() and not self._is_warmed_up:
+                self._warmup_task = None
 
     async def get_or_create_user_session(self, turn_context: TurnContext) -> UserSession:
         """Get or create a user session based on Teams user information"""
@@ -579,7 +695,11 @@ class MyBot(ActivityHandler):
         # Handle special commands first (before checking for timeout reset)
         if await self._handle_special_commands(turn_context, question, user_session):
             return
-        
+
+        # Ensure the Genie API is warmed up before processing the first real question
+        if not await self._ensure_warmed_up(turn_context):
+            return
+
         # Check if conversation was reset due to timeout (only for data questions, not commands)
         if user_session.conversation_id is None and user_session.user_id in self.user_sessions:
             # This means the conversation was reset due to timeout
@@ -1271,9 +1391,19 @@ async def messages(req: Request) -> Response:
         return Response(status=500)
 
 
+async def _startup_warmup(app: web.Application) -> None:
+    """Ensure the Genie API is warmed up when the aiohttp app starts."""
+
+    try:
+        await BOT.warmup()
+    except Exception:
+        logger.exception("Startup warm-up encountered an unexpected error")
+
+
 def init_func(argv):
     APP = web.Application(middlewares=[aiohttp_error_middleware])
     APP.router.add_post("/api/messages", messages)
+    APP.on_startup.append(_startup_warmup)
     return APP
 
 
