@@ -26,7 +26,7 @@ from asyncio.log import logger
 import os
 import json
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional
 from dotenv import load_dotenv
 from aiohttp import web
 from databricks.sdk import WorkspaceClient
@@ -299,6 +299,8 @@ class MyBot(ActivityHandler):
         self._warmup_notified: bool = False
         self._warmup_task: Optional[asyncio.Task] = None
         self._warmup_error: Optional[str] = None
+        self._pending_warmup_turns: Dict[str, Dict[str, Any]] = {}
+        self._warmup_resume_task: Optional[asyncio.Task] = None
 
     async def warmup(self) -> None:
         """Warm up the Genie API without requiring a user turn context."""
@@ -306,14 +308,9 @@ class MyBot(ActivityHandler):
         if self._is_warmed_up:
             return
 
-        async with self._warmup_lock:
-            if self._is_warmed_up:
-                return
-
-            if self._warmup_task is None or self._warmup_task.done():
-                self._warmup_task = asyncio.create_task(self._run_warmup("startup"))
-
-            warmup_task = self._warmup_task
+        warmup_task = await self._trigger_warmup(None, "startup")
+        if warmup_task is None:
+            return
 
         try:
             warmup_completed = await warmup_task
@@ -323,13 +320,15 @@ class MyBot(ActivityHandler):
         if warmup_completed:
             self._warmup_notified = False
 
-    async def _ensure_warmed_up(self, turn_context: TurnContext) -> bool:
-        """Warm up the Genie API on cold start before handling the user's message."""
+    async def _trigger_warmup(
+        self, turn_context: Optional[TurnContext], source: str
+    ) -> Optional[asyncio.Task]:
+        """Ensure a warm-up task is running and optionally notify the user."""
 
         if self._is_warmed_up:
-            return True
+            return None
 
-        if not self._warmup_notified:
+        if turn_context and not self._warmup_notified:
             await turn_context.send_activity(
                 "⚙️ **Warming up the Genie Bot...**\n\nThis may take a few seconds and will only happen once."
             )
@@ -338,30 +337,149 @@ class MyBot(ActivityHandler):
         async with self._warmup_lock:
             if self._is_warmed_up:
                 self._warmup_notified = False
-                return True
+                return None
 
             if self._warmup_task is None or self._warmup_task.done():
-                self._warmup_task = asyncio.create_task(self._run_warmup("on-demand"))
+                self._warmup_task = asyncio.create_task(self._run_warmup(source))
 
-            warmup_task = self._warmup_task
+            return self._warmup_task
+
+    async def _queue_question_until_warm(
+        self, turn_context: TurnContext, question: str, user_session: UserSession
+    ) -> None:
+        """Store the user's question and resume once the warm-up completes."""
+
+        conversation_reference = TurnContext.get_conversation_reference(turn_context.activity)
+        pending_key = conversation_reference.conversation.id
+        self._pending_warmup_turns[pending_key] = {
+            "conversation_reference": conversation_reference,
+            "question": question,
+            "user_id": user_session.user_id,
+        }
+
+        warmup_task = await self._trigger_warmup(turn_context, "on-demand")
+        if warmup_task is None:
+            await self._resume_pending_turns(True)
+            return
+
+        if self._warmup_resume_task is None or self._warmup_resume_task.done():
+            loop = asyncio.get_running_loop()
+            self._warmup_resume_task = loop.create_task(self._wait_for_warmup_and_resume())
+
+    async def _wait_for_warmup_and_resume(self) -> None:
+        """Wait for the current warm-up task and resume any queued turns."""
+
+        warmup_task = self._warmup_task
+        if warmup_task is None:
+            await self._resume_pending_turns(self._is_warmed_up)
+            return
 
         try:
             warmup_completed = await warmup_task
         except Exception:
             warmup_completed = False
 
-        if warmup_completed:
-            self._warmup_notified = False
-            return True
+        await self._resume_pending_turns(warmup_completed)
 
-        if self._warmup_notified:
-            await turn_context.send_activity(
+    async def _resume_pending_turns(self, warmup_succeeded: bool) -> None:
+        """Resume or fail any turns queued while the bot was warming up."""
+
+        pending_turns = list(self._pending_warmup_turns.values())
+        self._pending_warmup_turns.clear()
+
+        if not pending_turns:
+            self._warmup_notified = False
+            return
+
+        if not warmup_succeeded:
+            failure_message = (
                 "❌ I couldn't warm up the Genie service. Please try again in a moment." if not self._warmup_error else
                 f"❌ I couldn't warm up the Genie service ({self._warmup_error}). Please try again in a moment."
             )
-            self._warmup_notified = False
 
-        return False
+            async def send_failure(context: TurnContext, message: str = failure_message) -> None:
+                await context.send_activity(message)
+
+            for entry in pending_turns:
+                try:
+                    await self._continue_conversation(entry["conversation_reference"], send_failure)
+                except Exception as resume_error:
+                    logger.error("Failed to notify user about warm-up failure: %s", resume_error)
+
+            self._warmup_notified = False
+            return
+
+        for entry in pending_turns:
+
+            async def resume_logic(resume_context: TurnContext, entry: Dict[str, Any] = entry) -> None:
+                session = self.user_sessions.get(entry["user_id"])
+                if session is None:
+                    session = await self.get_or_create_user_session(resume_context)
+                await self._process_user_question(resume_context, entry["question"], session)
+
+            try:
+                await self._continue_conversation(entry["conversation_reference"], resume_logic)
+            except Exception as resume_error:
+                logger.error("Failed to resume pending conversation after warm-up: %s", resume_error)
+
+        self._warmup_notified = False
+
+    async def _continue_conversation(
+        self,
+        conversation_reference: ConversationReference,
+        logic: Callable[[TurnContext], Awaitable[None]],
+    ) -> None:
+        """Continue a conversation regardless of adapter type."""
+
+        try:
+            if isinstance(ADAPTER, CloudAdapter):
+                await ADAPTER.continue_conversation(CONFIG.APP_ID, conversation_reference, logic)
+            else:
+                await ADAPTER.continue_conversation(conversation_reference, logic)
+        except TypeError:
+            # Fallback for adapters that expect bot ID as keyword argument
+            await ADAPTER.continue_conversation(
+                conversation_reference, logic, bot_id=getattr(CONFIG, "APP_ID", None)
+            )
+
+    async def _process_user_question(
+        self, turn_context: TurnContext, question: str, user_session: UserSession
+    ) -> None:
+        """Send the user's question to Genie and return the formatted response."""
+
+        if user_session.conversation_id is None and user_session.user_id in self.user_sessions:
+            await turn_context.send_activity(
+                "🤖 **Starting New Conversation...**\n\n"
+            )
+
+        try:
+            answer, new_conversation_id, genie_message_id = await ask_genie(
+                question, CONFIG.DATABRICKS_SPACE_ID, user_session, user_session.conversation_id
+            )
+
+            user_session.conversation_id = new_conversation_id
+            user_session.user_context['last_question'] = question
+            user_session.user_context['last_response_time'] = datetime.now(timezone.utc).isoformat()
+            user_session.user_context['last_genie_message_id'] = genie_message_id
+
+            answer_json = json.loads(answer)
+            response = process_query_results(answer_json)
+
+            response = f"**👤 {user_session.name}**\n\n{response}"
+
+            await turn_context.send_activity(response)
+            await self._send_feedback_card(turn_context, user_session)
+
+        except json.JSONDecodeError:
+            await turn_context.send_activity(
+                f"**👤 {user_session.name}**\n\n❌ Failed to decode response from the server."
+            )
+            await self._send_feedback_card(turn_context, user_session)
+        except Exception as e:
+            logger.error(f"Error processing message for {user_session.get_display_name()}: {str(e)}")
+            await turn_context.send_activity(
+                f"**👤 {user_session.name}**\n\n❌ An error occurred while processing your request.\n\n Note: This often occurs when the output is too long, please try adjusting your question to request a shorter answer."
+            )
 
     def _blocking_warmup(self) -> None:
         """Perform the blocking warm-up calls in a worker thread."""
@@ -697,58 +815,11 @@ class MyBot(ActivityHandler):
             return
 
         # Ensure the Genie API is warmed up before processing the first real question
-        if not await self._ensure_warmed_up(turn_context):
+        if not self._is_warmed_up:
+            await self._queue_question_until_warm(turn_context, question, user_session)
             return
 
-        # Check if conversation was reset due to timeout (only for data questions, not commands)
-        if user_session.conversation_id is None and user_session.user_id in self.user_sessions:
-            # This means the conversation was reset due to timeout
-            # await turn_context.send_activity(
-            #     "⏰ **Conversation Reset**\n\n"
-            #     "Your previous conversation has expired (4+ hours of inactivity). "
-            #     "Starting fresh with a new conversation context.\n\n"
-            #     "I'm working on your answer now!"
-            # )
-
-            await turn_context.send_activity(
-                "🤖 **Starting New Conversation...**\n\n"
-            )
-        
-        # Process the message with user context
-        try:
-            answer, new_conversation_id, genie_message_id = await ask_genie(
-                question, CONFIG.DATABRICKS_SPACE_ID, user_session, user_session.conversation_id
-            )
-            
-            # Update user session with new conversation ID and store the specific message ID for feedback
-            user_session.conversation_id = new_conversation_id
-            user_session.user_context['last_question'] = question
-            user_session.user_context['last_response_time'] = datetime.now(timezone.utc).isoformat()
-            user_session.user_context['last_genie_message_id'] = genie_message_id
-
-            answer_json = json.loads(answer)
-            response = process_query_results(answer_json)
-            
-            # Add user context to response
-            response = f"**👤 {user_session.name}**\n\n{response}"
-
-            # Send the main response
-            await turn_context.send_activity(response)
-            
-            # Send feedback card as a separate message
-            await self._send_feedback_card(turn_context, user_session)
-            
-        except json.JSONDecodeError:
-            await turn_context.send_activity(
-                f"**👤 {user_session.name}**\n\n❌ Failed to decode response from the server."
-            )
-            # Send feedback card for error responses too
-            await self._send_feedback_card(turn_context, user_session)
-        except Exception as e:
-            logger.error(f"Error processing message for {user_session.get_display_name()}: {str(e)}")
-            await turn_context.send_activity(
-                f"**👤 {user_session.name}**\n\n❌ An error occurred while processing your request.\n\n Note: This often occurs when the output is too long, please try adjusting your question to request a shorter answer."
-            )
+        await self._process_user_question(turn_context, question, user_session)
 
 #     async def _handle_user_identification(self, turn_context: TurnContext, question: str):
 #         """Handle cases where user email is not available"""
