@@ -294,95 +294,6 @@ class MyBot(ActivityHandler):
         self.email_sessions: Dict[str, UserSession] = {}  # Maps email to UserSession for easy lookup
         self.message_feedback: Dict[str, Dict] = {}  # Track feedback for each message
         self.pending_email_input: Dict[str, bool] = {}  # Track users waiting for email input
-        self._is_warmed_up: bool = False
-        self._warmup_lock: asyncio.Lock = asyncio.Lock()
-        self._warmup_notified: bool = False
-        self._warmup_task: Optional[asyncio.Task] = None
-        self._warmup_error: Optional[str] = None
-
-    async def warmup(self) -> None:
-        """Warm up the Genie API without requiring a user turn context."""
-
-        if self._is_warmed_up:
-            return
-
-        async with self._warmup_lock:
-            if self._is_warmed_up:
-                return
-
-            if self._warmup_task is None or self._warmup_task.done():
-                self._warmup_task = asyncio.create_task(self._run_warmup("startup"))
-
-            warmup_task = self._warmup_task
-
-        try:
-            warmup_completed = await warmup_task
-        except Exception:
-            warmup_completed = False
-
-        if warmup_completed:
-            self._warmup_notified = False
-
-    async def _ensure_warmed_up(self, turn_context: TurnContext) -> bool:
-        """Warm up the Genie API on cold start before handling the user's message."""
-
-        if self._is_warmed_up:
-            return True
-
-        if not self._warmup_notified:
-            await turn_context.send_activity(
-                "⚙️ **Warming up the Genie Bot...**\n\nThis may take a few seconds and will only happen once."
-            )
-            self._warmup_notified = True
-
-        async with self._warmup_lock:
-            if self._is_warmed_up:
-                self._warmup_notified = False
-                return True
-
-            if self._warmup_task is None or self._warmup_task.done():
-                self._warmup_task = asyncio.create_task(self._run_warmup("on-demand"))
-
-            warmup_task = self._warmup_task
-
-        try:
-            warmup_completed = await warmup_task
-        except Exception:
-            warmup_completed = False
-
-        if warmup_completed:
-            self._warmup_notified = False
-            return True
-
-        if self._warmup_notified:
-            await turn_context.send_activity(
-                "❌ I couldn't warm up the Genie service. Please try again in a moment." if not self._warmup_error else
-                f"❌ I couldn't warm up the Genie service ({self._warmup_error}). Please try again in a moment."
-            )
-            self._warmup_notified = False
-
-        return False
-
-    async def _run_warmup(self, source: str) -> bool:
-        """Execute the warm-up routine and cache the result for awaiting callers."""
-
-        try:
-            logger.info(f"Starting Genie warm-up request ({source})")
-            loop = asyncio.get_running_loop()
-            await loop.run_in_executor(None, genie_api.list_spaces)
-            self._is_warmed_up = True
-            self._warmup_error = None
-            logger.info(f"Genie warm-up completed successfully ({source})")
-            return True
-        except Exception as e:
-            self._is_warmed_up = False
-            self._warmup_error = str(e)
-            logger.error(f"Genie warm-up failed ({source}): {str(e)}")
-            return False
-        finally:
-            # Ensure failed warm-ups can be retried by future callers
-            if self._warmup_task and self._warmup_task.done() and not self._is_warmed_up:
-                self._warmup_task = None
 
     async def get_or_create_user_session(self, turn_context: TurnContext) -> UserSession:
         """Get or create a user session based on Teams user information"""
@@ -668,11 +579,7 @@ class MyBot(ActivityHandler):
         # Handle special commands first (before checking for timeout reset)
         if await self._handle_special_commands(turn_context, question, user_session):
             return
-
-        # Ensure the Genie API is warmed up before processing the first real question
-        if not await self._ensure_warmed_up(turn_context):
-            return
-
+        
         # Check if conversation was reset due to timeout (only for data questions, not commands)
         if user_session.conversation_id is None and user_session.user_id in self.user_sessions:
             # This means the conversation was reset due to timeout
@@ -1330,61 +1237,125 @@ Ready to get started? Type `email` to begin!"""
                 await turn_context.send_activity(welcome_message)
 
 
-BOT = MyBot()
 
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+logger.info("🚀 Starting Databricks Genie Bot App")
+
+CONFIG = DefaultConfig()
+
+if CONFIG.APP_ID and CONFIG.APP_PASSWORD:
+    ADAPTER = CloudAdapter(ConfigurationBotFrameworkAuthentication(CONFIG))
+else:
+    SETTINGS = BotFrameworkAdapterSettings("", "")
+    ADAPTER = BotFrameworkAdapter(SETTINGS)
+
+BOT = MyBot()
+is_warmed_up = False
+
+async def warm_up_bot():
+    """Run lightweight initialization to prepare the bot for first request."""
+    global is_warmed_up
+    if is_warmed_up:
+        return
+    logger.info("🔄 Warming up bot components...")
+    try:
+        await BOT.initialize_async() if hasattr(BOT, "initialize_async") else None
+        # Optionally ping downstream dependencies here
+        is_warmed_up = True
+        logger.info("✅ Bot warmed up successfully.")
+    except Exception as e:
+        logger.error(f"❌ Warm-up failed: {e}")
+
+async def root(req: Request) -> Response:
+    """Root endpoint for Azure probe."""
+    return web.Response(text="✅ Databricks Genie Bot is running")
+
+async def health(req: Request) -> Response:
+    """Health check endpoint; also ensures bot is warmed up."""
+    global is_warmed_up
+    if not is_warmed_up:
+        logger.info("Health probe triggered - warming up bot...")
+        await warm_up_bot()
+    return json_response({"status": "ok", "warmed_up": is_warmed_up})
 
 async def messages(req: Request) -> Response:
+    """Main endpoint for incoming Bot Framework messages."""
+    global is_warmed_up
+
     content_type = req.headers.get("Content-Type", "").lower()
-    if "application/json" in content_type:
-        body = await req.json()
-    else:
+    if "application/json" not in content_type:
         logger.error(f"Unsupported Content-Type: {content_type}")
         return Response(status=415)
- 
 
+    body = await req.json()
+    auth_header = req.headers.get("Authorization", "")
     activity = Activity().deserialize(body)
+
+    if not is_warmed_up:
+        logger.warning("⚠️ Cold start detected — warming up before processing message...")
+
+        try:
+            async def send_warming_notice(turn_context: TurnContext):
+                await turn_context.send_activity(
+                    "⏳ **The Databricks Genie Bot is starting up...**\n\n"
+                    "Please wait a few seconds while I get ready."
+                )
+
+            await ADAPTER.process_activity(activity, auth_header, send_warming_notice)
+            logger.info("📨 Sent 'warming up' notice to Teams successfully.")
+        except Exception as e:
+            logger.error(f"Failed to send 'warming up' notice: {e}", exc_info=True)
+
+        await warm_up_bot()
+
+        try:
+            logger.info("🔁 Replaying user message after warm-up...")
+            await ADAPTER.process_activity(activity, auth_header, BOT.on_turn)
+            logger.info("✅ Warm-up complete and user message processed.")
+            return Response(status=201)
+        except Exception as e:
+            logger.error(f"❌ Error reprocessing message after warm-up: {e}", exc_info=True)
+            return Response(status=500)
+    return await process_incoming_activity(req)
+
+
+async def process_incoming_activity(req: Request) -> Response:
+    """Handle adapter dispatch for the incoming activity."""
     auth_header = req.headers.get("Authorization", "")
 
     try:
-        # Handle different adapter types
-        if hasattr(ADAPTER, 'process'):
-            # CloudAdapter
-            response = await ADAPTER.process(req, BOT)
-            if response:
-                return json_response(data=response.body, status=response.status)
-            return Response(status=201)
-        else:
-            # BotFrameworkAdapter - use process_activity with correct signature
-            response = await ADAPTER.process_activity(activity, auth_header, BOT.on_turn)
-            if response:
-                return json_response(data=response.body, status=response.status)
-            return Response(status=201)
+        if hasattr(ADAPTER, "process"):
+            return await ADAPTER.process(req, BOT)
+
+        body = await req.json()
+        activity = Activity().deserialize(body)
+        response = await ADAPTER.process_activity(activity, auth_header, BOT.on_turn)
+
+        if isinstance(response, InvokeResponse):
+            return json_response(data=response.body, status=response.status)
+        return Response(status=201)
     except Exception as e:
-        logger.error(f"Error processing request: {str(e)}")
+        logger.error(f"Error processing activity: {e}", exc_info=True)
         return Response(status=500)
 
 
-async def _startup_warmup(app: web.Application) -> None:
-    """Ensure the Genie API is warmed up when the aiohttp app starts."""
+async def on_startup(app):
+    logger.info("🌅 App startup detected — warming bot proactively...")
+    await warm_up_bot()
+    #await send_warming_up_message()
+    
 
-    try:
-        await BOT.warmup()
-    except Exception:
-        logger.exception("Startup warm-up encountered an unexpected error")
-
-
-def init_func(argv):
-    APP = web.Application(middlewares=[aiohttp_error_middleware])
-    APP.router.add_post("/api/messages", messages)
-    APP.on_startup.append(_startup_warmup)
-    return APP
-
+def init_func(argv=None):
+    app = web.Application(middlewares=[aiohttp_error_middleware])
+    app.router.add_get("/", root)
+    app.router.add_get("/health", health)
+    app.router.add_post("/api/messages", messages)
+    app.on_startup.append(on_startup)
+    return app
 
 if __name__ == "__main__":
-    APP = init_func(None)
-    try:
-        HOST = "0.0.0.0"
-        PORT = int(os.environ.get("PORT", CONFIG.PORT))
-        web.run_app(APP, host=HOST, port=PORT)
-    except Exception as error:
-        raise error
+    app = init_func(None)
+    host = "0.0.0.0"
+    port = int(os.environ.get("PORT", CONFIG.PORT))
+    web.run_app(app, host=host, port=port)
